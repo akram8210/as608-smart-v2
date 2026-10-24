@@ -3,7 +3,7 @@
  * AS608/ZFM-compatible 0xEF01 UART protocol, default 57600 baud.
  * MIT License. Not tested on physical hardware yet.
  */
-//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.4"
+//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.5"
 namespace AS608Smart {
     const BAUD = BaudRate.BaudRate57600
     const NO_FINGER = -3
@@ -120,7 +120,7 @@ namespace AS608Smart {
         diagnosticPacketStage = 0
         diagnosticExpectedBytes = 0
         diagnosticTxBytes = 0
-        serial.readBuffer(0)
+        // No pre-transmission UART drain: match the stable v1.1 send sequence.
         transmit(data)
         const response = readAck(timeoutMs)
         busy = false
@@ -179,7 +179,7 @@ namespace AS608Smart {
         if (busy) { lastStatus = BUSY; return }
         serial.redirect(tx, rx, BAUD)
         basic.pause(500) // allow the UART redirect and sensor to settle
-        serial.readBuffer(0)
+        // No pre-probe UART drain: match the stable v1.1 initialization.
         ready = true // enable the command transaction for the initial probe
         lastStatus = -1
         fingerPresent = false

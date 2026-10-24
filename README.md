@@ -1,4 +1,6 @@
-# AS608 Smart Fingerprint v2.0.0-beta.4
+> **Beta 5 test:** Removes two pre-command `serial.readBuffer(0)` drains to align the UART send sequence with the working v1.1 driver. This is a hypothesis, not a confirmed hardware fix. Keep v1.1 unchanged.
+
+# AS608 Smart Fingerprint v2.0.0-beta.5
 
 Independent MakeCode extension for micro:bit V2 and AS608-compatible UART fingerprint readers.
 
@@ -22,7 +24,7 @@ In `on start`:
 Expected outgoing packet size for the 0x0F command: **12** bytes. Success requires a valid response and `last sensor status = 0`. A result of `12, 0, -2` means the initial probe still timed out without receiving bytes. This build has **not been tested on physical hardware**.
 
 ## GitHub release
-Create tag `v2.0.0-beta.4` targeting the commit that contains these files. Mark it **pre-release**. Tagging makes versions reproducible but does not guarantee MakeCode cache refresh.
+Create tag `v2.0.0-beta.5` targeting the commit that contains these files. Mark it **pre-release**. Tagging makes versions reproducible but does not guarantee MakeCode cache refresh.
 
 ## Notes
 - Do not replace the known-working v1.1 project.
