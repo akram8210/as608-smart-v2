@@ -1,7 +1,22 @@
 {
-  "AS608Smart": "AS608 Smart",
   "AS608Smart.connect|block": "connect fingerprint scanner RX $rx TX $tx",
   "AS608Smart.isConnected|block": "fingerprint sensor connected?",
+  "AS608Smart.storedFingerprints|block": "stored fingerprints",
+  "AS608Smart.identifyOnce|block": "identify finger once",
+  "AS608Smart.startAutomatic|block": "start automatic fingerprint scanning",
+  "AS608Smart.stopAutomatic|block": "stop automatic fingerprint scanning",
+  "AS608Smart.onRecognized|block": "on fingerprint recognized",
+  "AS608Smart.onRejected|block": "on fingerprint rejected",
+  "AS608Smart.onError|block": "on fingerprint communication error",
+  "AS608Smart.lastFingerprintId|block": "last fingerprint ID",
+  "AS608Smart.lastConfidence|block": "last match confidence",
+  "AS608Smart.enrollmentStep|block": "enrollment step",
+  "AS608Smart.onEnrollmentStep|block": "on enrollment step changed",
+  "AS608Smart.enrollFingerprint|block": "enroll fingerprint with ID $id",
+  "AS608Smart.deleteFingerprint|block": "delete fingerprint ID $id",
+  "AS608Smart.deleteAllFingerprints|block": "DELETE ALL fingerprints",
   "AS608Smart.lastSensorStatus|block": "last sensor status",
-  "AS608Smart.storedFingerprints|block": "stored fingerprints (last check)"
+  "AS608Smart.successfulRecognitions|block": "successful recognitions",
+  "AS608Smart.rejectedRecognitions|block": "rejected recognitions",
+  "AS608Smart.resetCounters|block": "reset recognition counters"
 }
