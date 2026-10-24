@@ -1,3 +1,17 @@
+# AS608 Smart v2.0 Beta 2 — UART connection fix
+
+**Status: hardware testing required.** The previous Beta 1 returned `-2` when checking the sensor on the user's micro:bit V2. This version improves the UART response parser, adds a 500 ms settling delay after serial redirect, removes custom UART buffer sizing, and preserves specific diagnostic error codes. The source of the failure is **not yet proven**. All existing blocks are retained.
+
+Diagnostic codes: `-2` timeout / incomplete UART response; `-12` invalid packet length; `-13` unexpected address/type; `-14` checksum mismatch; `-4` busy. An AS608 sensor status >=0 is a sensor response.
+
+**Hardware:** AS608 TX to micro:bit P13 (RX), AS608 RX to micro:bit P14 (TX), common GND, suitable power. Preserve the known-working v1.1 extension separately.
+
+**Test:** connect P13/P14, pause 2000 ms, check `fingerprint sensor connected?`; show ✓ on success, else show `last sensor status`. Do not enroll or delete fingerprints until communication passes.
+
+**Gallery:** `icon.png` is included at 300×200 pixels. Gallery image appearance can depend on MakeCode caching and repository metadata.
+
+---
+
 # AS608 Smart Fingerprint v2.0 — Beta 1
 
 **Independent educational MakeCode extension for micro:bit V2.** New UART framing, bounded ACK parser, transaction lock, background recognition and two-placement enrollment. No code was copied from the previous extension. AS608 protocol command constants are hardware interface facts.

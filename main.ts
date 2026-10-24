@@ -45,30 +45,52 @@ namespace AS608Smart {
         serial.writeBuffer(packet)
     }
 
-    // Every byte is acquired with a bounded deadline; never readBuffer(1).
+    // Receive a complete AS608 acknowledgment using a deadline for the whole frame.
+    // Parse incrementally, including when UART chunks arrive split across reads.
+    // Avoid blocking readBuffer(1): an incomplete frame must not freeze micro:bit.
     function readAck(timeoutMs: number): number[] {
-        const bytes: number[] = []
+        let bytes: number[] = []
+        let expected = 0
         const deadline = input.runningTime() + timeoutMs
         while (input.runningTime() < deadline) {
-            const part = serial.readBuffer(0)
-            for (let i = 0; i < part.length; i++) bytes.push(part[i])
-            while (bytes.length >= 2 && (bytes[0] !== 0xEF || bytes[1] !== 0x01)) bytes.shift()
-            if (bytes.length >= 9) {
-                const n = bytes[7] * 256 + bytes[8]
-                if (n < 3 || n > 128) return null
-                if (bytes.length >= 9 + n) {
-                    if (bytes[2] !== 255 || bytes[3] !== 255 || bytes[4] !== 255 || bytes[5] !== 255 || bytes[6] !== 7) return null
-                    let sum = bytes[6] + bytes[7] + bytes[8]
-                    for (let j = 9; j < 9 + n - 2; j++) sum += bytes[j]
-                    const received = bytes[9 + n - 2] * 256 + bytes[9 + n - 1]
-                    if ((sum & 65535) !== received) return null
-                    const result: number[] = []
-                    for (let j = 9; j < 9 + n - 2; j++) result.push(bytes[j])
-                    return result
+            const chunk = serial.readBuffer(0)
+            for (let i = 0; i < chunk.length; i++) {
+                const b = chunk[i]
+                if (bytes.length === 0 && b !== 0xEF) continue
+                if (bytes.length === 1 && b !== 0x01) {
+                    bytes = []
+                    if (b === 0xEF) bytes.push(b)
+                    continue
+                }
+                bytes.push(b)
+                if (bytes.length === 9) {
+                    const payloadSize = bytes[7] * 256 + bytes[8]
+                    if (payloadSize < 3 || payloadSize > 256) {
+                        lastStatus = -12 // invalid frame length
+                        return null
+                    }
+                    expected = 9 + payloadSize
+                }
+                if (expected > 0 && bytes.length === expected) {
+                    if (bytes[2] !== 255 || bytes[3] !== 255 || bytes[4] !== 255 || bytes[5] !== 255 || bytes[6] !== 7) {
+                        lastStatus = -13 // unexpected packet address/type
+                        return null
+                    }
+                    let checksum = 0
+                    for (let j = 6; j < expected - 2; j++) checksum += bytes[j]
+                    const received = bytes[expected - 2] * 256 + bytes[expected - 1]
+                    if ((checksum & 65535) !== received) {
+                        lastStatus = -14 // checksum mismatch
+                        return null
+                    }
+                    const payload: number[] = []
+                    for (let j = 9; j < expected - 2; j++) payload.push(bytes[j])
+                    return payload
                 }
             }
-            basic.pause(5)
+            basic.pause(2)
         }
+        lastStatus = -2 // no complete acknowledgment within timeout
         return null
     }
 
@@ -80,7 +102,7 @@ namespace AS608Smart {
         transmit(data)
         const response = readAck(timeoutMs)
         busy = false
-        lastStatus = response && response.length > 0 ? response[0] : IO_ERROR
+        if (response && response.length > 0) lastStatus = response[0]
         return response
     }
 
@@ -134,8 +156,7 @@ namespace AS608Smart {
         autoGeneration++
         if (busy) { lastStatus = BUSY; return }
         serial.redirect(tx, rx, BAUD)
-        serial.setRxBufferSize(128)
-        serial.setTxBufferSize(64)
+        basic.pause(500) // allow the UART redirect and sensor to settle
         serial.readBuffer(0)
         ready = true
         lastStatus = -1
@@ -147,7 +168,7 @@ namespace AS608Smart {
     //% blockId=as608_v2_check block="fingerprint sensor connected?"
     //% weight=95 group="Connection"
     export function isConnected(): boolean {
-        const r = command([0x1D], 1300)
+        const r = command([0x1D], 2000)
         return !!r && r.length >= 3 && r[0] === 0
     }
 
@@ -155,7 +176,7 @@ namespace AS608Smart {
     //% blockId=as608_v2_count block="stored fingerprints"
     //% weight=90 group="Fingerprints"
     export function storedFingerprints(): number {
-        const r = command([0x1D], 1300)
+        const r = command([0x1D], 2000)
         return r && r[0] === 0 && r.length >= 3 ? r[1] * 256 + r[2] : -1
     }
 
