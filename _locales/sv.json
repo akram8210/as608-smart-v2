@@ -1,0 +1,7 @@
+{
+  "AS608Smart": "AS608 Smart",
+  "AS608Smart.connect|block": "anslut fingeravtrycksläsare RX $rx TX $tx",
+  "AS608Smart.isConnected|block": "är fingeravtrycksläsaren ansluten?",
+  "AS608Smart.lastSensorStatus|block": "senaste sensorstatus",
+  "AS608Smart.storedFingerprints|block": "sparade fingeravtryck (senaste kontroll)"
+}

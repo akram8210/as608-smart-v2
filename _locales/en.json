@@ -1,0 +1,7 @@
+{
+  "AS608Smart": "AS608 Smart",
+  "AS608Smart.connect|block": "connect fingerprint scanner RX $rx TX $tx",
+  "AS608Smart.isConnected|block": "fingerprint sensor connected?",
+  "AS608Smart.lastSensorStatus|block": "last sensor status",
+  "AS608Smart.storedFingerprints|block": "stored fingerprints (last check)"
+}

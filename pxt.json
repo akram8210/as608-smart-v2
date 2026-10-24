@@ -1,0 +1,9 @@
+{
+  "name": "as608-smart-fingerprint-v2",
+  "version": "2.0.0-alpha.1",
+  "description": "Independent AS608-compatible fingerprint extension for micro:bit. Phase 1: UART and connection verification.",
+  "license": "MIT",
+  "dependencies": { "core": "*" },
+  "files": ["main.ts", "_locales/en.json", "_locales/sv.json"],
+  "public": true
+}
