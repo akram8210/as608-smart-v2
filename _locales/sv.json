@@ -1,7 +1,22 @@
 {
-  "AS608Smart": "AS608 Smart",
-  "AS608Smart.connect|block": "anslut fingeravtrycksläsare RX $rx TX $tx",
-  "AS608Smart.isConnected|block": "är fingeravtrycksläsaren ansluten?",
+  "AS608Smart.connect|block": "anslut fingeravtryckssensor RX $rx TX $tx",
+  "AS608Smart.isConnected|block": "är fingeravtryckssensorn ansluten?",
+  "AS608Smart.storedFingerprints|block": "antal sparade fingeravtryck",
+  "AS608Smart.identifyOnce|block": "identifiera finger en gång",
+  "AS608Smart.startAutomatic|block": "starta automatisk fingeravtrycksläsning",
+  "AS608Smart.stopAutomatic|block": "stoppa automatisk fingeravtrycksläsning",
+  "AS608Smart.onRecognized|block": "när fingeravtryck känns igen",
+  "AS608Smart.onRejected|block": "när fingeravtryck nekas",
+  "AS608Smart.onError|block": "vid kommunikationsfel med sensorn",
+  "AS608Smart.lastFingerprintId|block": "senaste fingeravtrycks-ID",
+  "AS608Smart.lastConfidence|block": "senaste matchningssäkerhet",
+  "AS608Smart.enrollmentStep|block": "registreringssteg",
+  "AS608Smart.onEnrollmentStep|block": "när registreringssteget ändras",
+  "AS608Smart.enrollFingerprint|block": "registrera fingeravtryck med ID $id",
+  "AS608Smart.deleteFingerprint|block": "radera fingeravtryck med ID $id",
+  "AS608Smart.deleteAllFingerprints|block": "RADERA ALLA fingeravtryck",
   "AS608Smart.lastSensorStatus|block": "senaste sensorstatus",
-  "AS608Smart.storedFingerprints|block": "sparade fingeravtryck (senaste kontroll)"
+  "AS608Smart.successfulRecognitions|block": "antal godkända identifieringar",
+  "AS608Smart.rejectedRecognitions|block": "antal nekade identifieringar",
+  "AS608Smart.resetCounters|block": "nollställ räknare"
 }
