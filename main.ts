@@ -3,7 +3,7 @@
  * AS608/ZFM-compatible 0xEF01 UART protocol, default 57600 baud.
  * MIT License. Not tested on physical hardware yet.
  */
-//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.3"
+//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.4"
 namespace AS608Smart {
     const BAUD = BaudRate.BaudRate57600
     const NO_FINGER = -3
@@ -180,18 +180,30 @@ namespace AS608Smart {
         serial.redirect(tx, rx, BAUD)
         basic.pause(500) // allow the UART redirect and sensor to settle
         serial.readBuffer(0)
-        ready = true
+        ready = true // enable the command transaction for the initial probe
         lastStatus = -1
         fingerPresent = false
         lastId = -1
+        // Unlike beta.3, perform a real AS608 system-parameters request (0x0F)
+        // during connection, as the verified v1.1 initialization sequence does.
+        // Preserve UART diagnostics from this probe for troubleshooting.
+        const response = command([0x0F], 2000)
+        if (!response || response.length < 17 || response[0] !== 0) {
+            ready = false
+            if (response && response[0] === 0 && response.length < 17) lastStatus = -15
+            return
+        }
+        // System parameters response: confirmation, status(2), system ID(2),
+        // library capacity(2), security(2), address(4), packet length(2), baud(2).
+        const capacity = response[5] * 256 + response[6]
+        if (capacity > 0) librarySize = capacity
     }
 
     /** Ping sensor with a template count request. */
     //% blockId=as608_v2_check block="fingerprint sensor connected?"
     //% weight=95 group="Connection"
     export function isConnected(): boolean {
-        const r = command([0x1D], 2000)
-        return !!r && r.length >= 3 && r[0] === 0
+        return ready
     }
 
     /** Read actual count, or -1 on communication error. */
