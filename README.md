@@ -1,54 +1,41 @@
-# AS608 Smart v2.0 Beta 2 — UART connection fix
+# AS608 Smart v2.0 Beta 3 — UART diagnostics
 
-**Status: hardware testing required.** The previous Beta 1 returned `-2` when checking the sensor on the user's micro:bit V2. This version improves the UART response parser, adds a 500 ms settling delay after serial redirect, removes custom UART buffer sizing, and preserves specific diagnostic error codes. The source of the failure is **not yet proven**. All existing blocks are retained.
+**Hardware testing required.** Beta 2 returned `-2` on the user's micro:bit V2; Beta 3 does not claim to fix it. Instead, it measures actual received bytes to determine whether the fault is TX, RX, framing, or a partial response.
 
-Diagnostic codes: `-2` timeout / incomplete UART response; `-12` invalid packet length; `-13` unexpected address/type; `-14` checksum mismatch; `-4` busy. An AS608 sensor status >=0 is a sensor response.
+## Test (MakeCode Blocks)
 
-**Hardware:** AS608 TX to micro:bit P13 (RX), AS608 RX to micro:bit P14 (TX), common GND, suitable power. Preserve the known-working v1.1 extension separately.
+Keep the known-good wiring: sensor TX -> P13 (micro:bit RX), sensor RX -> P14 (micro:bit TX). Keep the v1.1 project unchanged.
 
-**Test:** connect P13/P14, pause 2000 ms, check `fingerprint sensor connected?`; show ✓ on success, else show `last sensor status`. Do not enroll or delete fingerprints until communication passes.
+In `on start` connect P13/P14, pause 2000 ms, call `fingerprint sensor connected?` once, then display the following values **in order** using `show number` with `pause 1000 ms` between values:
 
-**Gallery:** `icon.png` is included at 300×200 pixels. Gallery image appearance can depend on MakeCode caching and repository metadata.
+1. `last sensor status`
+2. `UART received bytes`
+3. `UART first byte`
+4. `UART packet stage`
+5. `UART expected bytes`
+6. `UART transmitted bytes`
 
----
+Do not run other sensor commands between the test and reading the diagnostics: every sensor command resets the diagnostic values.
 
-# AS608 Smart Fingerprint v2.0 — Beta 1
+### Interpretation
 
-**Independent educational MakeCode extension for micro:bit V2.** New UART framing, bounded ACK parser, transaction lock, background recognition and two-placement enrollment. No code was copied from the previous extension. AS608 protocol command constants are hardware interface facts.
+- Received bytes = 0: no bytes reached the parser (may be TX/RX, baud, power, or serial driver).
+- Received bytes > 0, packet stage 0: received data does not begin with `EF 01`.
+- Packet stage 1 or 2: partial header.
+- Packet stage 3: packet header received, but full packet did not arrive.
+- Packet stage 4: complete valid packet.
+- Status -12 invalid length, -13 wrong address/type, -14 checksum mismatch, -2 timeout.
 
-## Hardware
+**Important:** `serial.readBuffer(0)` is officially documented as non-blocking and returning buffered data. This release retains it and adds evidence collection instead of guessing at another fix.
 
-AS608 TX → micro:bit RX **P13**; AS608 RX → micro:bit TX **P14**; common GND; regulated compatible power. UART 57600 baud. Do not drive a loaded servo from the micro:bit 3.3 V rail; prefer a separate suitable servo supply with common GND. Servo signal can use P15.
+## Version display
 
-## Block groups
+The MakeCode category title is `AS608 Smart · v2.0.0-beta.3`, which is non-draggable. A genuinely non-draggable *fake block* in the flyout is not guaranteed by standard MakeCode extension APIs. The category title is the reliable supported alternative; check it before testing.
 
-Connection: connect, connection check. Recognition: start/stop, identify once, ID, confidence. Events: recognized, rejected, communication error, enrollment stage. Fingerprints: enroll, delete, count, delete all. Diagnostics: status and counters.
+## Icon caveat
 
-## Typical automatic scanning
+The `icon.png` asset is included, but MakeCode's official extension authoring documentation says custom gallery icons appear automatically **only for approved extensions**. Merely adding `icon.png` to `pxt.json` cannot force the image to appear for a user-provided unapproved extension. The repo will need to meet the approval checklist and receive approval for normal gallery icon display.
 
-- `on start`: connect RX P13 TX P14; pause 2000 ms; start automatic fingerprint scanning.
-- `on fingerprint recognized`: show tick; play sound; servo write P15 to 90; pause 2000 ms; servo write P15 to 0.
-- `on fingerprint rejected`: show cross; play rejection sound.
+## Existing features
 
-## Enrollment (do not run automatic scanning simultaneously)
-
-1. `stop automatic fingerprint scanning` and `pause 1500 ms` to allow any in-flight UART command to finish.
-2. `enroll fingerprint with ID 2` (returns true on success; false otherwise).
-3. Place finger when step=1, remove when step=2, replace same finger when step=3, complete when step=4. Step=-1 indicates failure.
-4. `start automatic fingerprint scanning` again.
-
-**Warning:** `DELETE ALL fingerprints` is irreversible. Do not use without explicit teacher confirmation.
-
-## Return values and status
-
-- `identify finger once`: >=0 is matched ID; -3 no finger; -9 unrecognized; -2 communication / processing failure; -4 busy.
-- `last sensor status`: 0 success, 2 no finger, 9 not found, -2 timeout/malformed packet, -4 busy, -5 enrollment wait timeout; other values are AS608 status bytes.
-- `stored fingerprints`: -1 means failure.
-
-## Important testing status
-
-**Source implementation complete for the listed block features, but not hardware-validated.** Check compilation in MakeCode and test on AS608 + micro:bit V2 before classroom use. The earlier working v1.1 repository should remain unchanged. `on enrollment step changed` handlers run concurrently: avoid long blocking code inside them. `on fingerprint recognized` handlers can include servo delays because they run in parallel with scanning.
-
-## Licensing
-
-MIT. The source is an independent implementation of the publicly documented AS608/ZFM serial protocol. This does not guarantee compatibility with every similar fingerprint sensor.
+Recognition, enrollment, deletion, events, and counters remain present. Do not enroll/delete fingerprints until communication is validated. Beta 3 is for diagnostics.

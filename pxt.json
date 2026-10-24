@@ -1,6 +1,6 @@
 {
   "name": "as608-smart-fingerprint-v2",
-  "version": "2.0.0-beta.2",
+  "version": "2.0.0-beta.3",
   "description": "Independent educational fingerprint sensor extension for micro:bit, AS608 UART protocol",
   "license": "MIT",
   "dependencies": {

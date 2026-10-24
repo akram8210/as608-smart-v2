@@ -18,5 +18,10 @@
   "AS608Smart.lastSensorStatus|block": "senaste sensorstatus",
   "AS608Smart.successfulRecognitions|block": "antal godkända identifieringar",
   "AS608Smart.rejectedRecognitions|block": "antal nekade identifieringar",
-  "AS608Smart.resetCounters|block": "nollställ räknare"
+  "AS608Smart.resetCounters|block": "nollställ räknare",
+  "AS608Smart.uartReceivedBytes|block": "UART mottagna byte",
+  "AS608Smart.uartFirstByte|block": "UART första byte",
+  "AS608Smart.uartPacketStage|block": "UART paketsteg",
+  "AS608Smart.uartExpectedBytes|block": "UART förväntade byte",
+  "AS608Smart.uartTransmittedBytes|block": "UART skickade byte"
 }

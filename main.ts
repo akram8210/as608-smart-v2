@@ -3,7 +3,7 @@
  * AS608/ZFM-compatible 0xEF01 UART protocol, default 57600 baud.
  * MIT License. Not tested on physical hardware yet.
  */
-//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart"
+//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.3"
 namespace AS608Smart {
     const BAUD = BaudRate.BaudRate57600
     const NO_FINGER = -3
@@ -26,6 +26,13 @@ namespace AS608Smart {
     let errorHandler: () => void = null
     let enrollStepHandler: () => void = null
     let enrollStep = 0
+    // UART diagnostics, reset on each transaction.
+    let diagnosticBytes = 0
+    let diagnosticFirstByte = -1
+    let diagnosticLastByte = -1
+    let diagnosticPacketStage = 0 // 0=no data, 1=EF, 2=EF01, 3=header, 4=complete
+    let diagnosticExpectedBytes = 0
+    let diagnosticTxBytes = 0
 
     function transmit(data: number[]): void {
         const payloadLength = data.length + 2
@@ -42,6 +49,7 @@ namespace AS608Smart {
         }
         packet[9 + data.length] = (checksum >> 8) & 255
         packet[10 + data.length] = checksum & 255
+        diagnosticTxBytes = packet.length
         serial.writeBuffer(packet)
     }
 
@@ -56,6 +64,9 @@ namespace AS608Smart {
             const chunk = serial.readBuffer(0)
             for (let i = 0; i < chunk.length; i++) {
                 const b = chunk[i]
+                diagnosticBytes++
+                if (diagnosticFirstByte < 0) diagnosticFirstByte = b
+                diagnosticLastByte = b
                 if (bytes.length === 0 && b !== 0xEF) continue
                 if (bytes.length === 1 && b !== 0x01) {
                     bytes = []
@@ -63,6 +74,8 @@ namespace AS608Smart {
                     continue
                 }
                 bytes.push(b)
+                if (bytes.length === 1) diagnosticPacketStage = 1
+                if (bytes.length === 2) diagnosticPacketStage = 2
                 if (bytes.length === 9) {
                     const payloadSize = bytes[7] * 256 + bytes[8]
                     if (payloadSize < 3 || payloadSize > 256) {
@@ -70,6 +83,8 @@ namespace AS608Smart {
                         return null
                     }
                     expected = 9 + payloadSize
+                    diagnosticExpectedBytes = expected
+                    diagnosticPacketStage = 3
                 }
                 if (expected > 0 && bytes.length === expected) {
                     if (bytes[2] !== 255 || bytes[3] !== 255 || bytes[4] !== 255 || bytes[5] !== 255 || bytes[6] !== 7) {
@@ -83,6 +98,7 @@ namespace AS608Smart {
                         lastStatus = -14 // checksum mismatch
                         return null
                     }
+                    diagnosticPacketStage = 4
                     const payload: number[] = []
                     for (let j = 9; j < expected - 2; j++) payload.push(bytes[j])
                     return payload
@@ -98,6 +114,12 @@ namespace AS608Smart {
     function command(data: number[], timeoutMs: number): number[] {
         if (!ready || busy) { lastStatus = BUSY; return null }
         busy = true
+        diagnosticBytes = 0
+        diagnosticFirstByte = -1
+        diagnosticLastByte = -1
+        diagnosticPacketStage = 0
+        diagnosticExpectedBytes = 0
+        diagnosticTxBytes = 0
         serial.readBuffer(0)
         transmit(data)
         const response = readAck(timeoutMs)
@@ -328,6 +350,31 @@ namespace AS608Smart {
     //% blockId=as608_v2_status block="last sensor status"
     //% weight=75 group="Diagnostics" advanced=true
     export function lastSensorStatus(): number { return lastStatus }
+
+    /** Number of bytes actually read from UART during the last sensor command. */
+    //% blockId=as608_v2_diagbytes block="UART received bytes"
+    //% weight=74 group="Diagnostics" advanced=true
+    export function uartReceivedBytes(): number { return diagnosticBytes }
+
+    /** First byte seen on UART during the last sensor command (-1 = none). */
+    //% blockId=as608_v2_diagfirst block="UART first byte"
+    //% weight=73 group="Diagnostics" advanced=true
+    export function uartFirstByte(): number { return diagnosticFirstByte }
+
+    /** Parser progress: 0 none, 1 EF, 2 EF01, 3 header, 4 complete. */
+    //% blockId=as608_v2_diagstage block="UART packet stage"
+    //% weight=72 group="Diagnostics" advanced=true
+    export function uartPacketStage(): number { return diagnosticPacketStage }
+
+    /** Expected complete packet size in bytes (0 if no valid header). */
+    //% blockId=as608_v2_diagexpected block="UART expected bytes"
+    //% weight=71 group="Diagnostics" advanced=true
+    export function uartExpectedBytes(): number { return diagnosticExpectedBytes }
+
+    /** Bytes in the most recent outgoing UART packet. */
+    //% blockId=as608_v2_diagtx block="UART transmitted bytes"
+    //% weight=70 group="Diagnostics" advanced=true
+    export function uartTransmittedBytes(): number { return diagnosticTxBytes }
 
     //% blockId=as608_v2_success block="successful recognitions"
     //% weight=70 group="Diagnostics" advanced=true

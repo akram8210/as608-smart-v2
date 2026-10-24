@@ -18,5 +18,10 @@
   "AS608Smart.lastSensorStatus|block": "last sensor status",
   "AS608Smart.successfulRecognitions|block": "successful recognitions",
   "AS608Smart.rejectedRecognitions|block": "rejected recognitions",
-  "AS608Smart.resetCounters|block": "reset recognition counters"
+  "AS608Smart.resetCounters|block": "reset recognition counters",
+  "AS608Smart.uartReceivedBytes|block": "UART received bytes",
+  "AS608Smart.uartFirstByte|block": "UART first byte",
+  "AS608Smart.uartPacketStage|block": "UART packet stage",
+  "AS608Smart.uartExpectedBytes|block": "UART expected bytes",
+  "AS608Smart.uartTransmittedBytes|block": "UART transmitted bytes"
 }
