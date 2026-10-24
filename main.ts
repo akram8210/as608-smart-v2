@@ -1,67 +1,70 @@
 /**
- * AS608 Smart Fingerprint v2 — independent protocol implementation.
- * Phase 1: UART connection and device response verification.
- * Copyright (c) 2026 AS608 Smart contributors. MIT License.
+ * AS608 Smart Fingerprint v2 — independently written MakeCode driver.
+ * AS608/ZFM-compatible 0xEF01 UART protocol, default 57600 baud.
+ * MIT License. Not tested on physical hardware yet.
  */
-//% color=#246B73 icon="\uf2c2" weight=90 block="AS608 Smart"
+//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart"
 namespace AS608Smart {
-    const START_HI = 0xEF
-    const START_LO = 0x01
-    const DEVICE_ADDRESS = 0xFFFFFFFF
-    const COMMAND_PACKET = 0x01
-    const ACK_PACKET = 0x07
-    const READ_TEMPLATE_COUNT = 0x1D
-    const UART_BAUD = BaudRate.BaudRate57600
-
-    let configured = false
-    let inTransaction = false
+    const BAUD = BaudRate.BaudRate57600
+    const NO_FINGER = -3
+    const IO_ERROR = -2
+    const BUSY = -4
+    const REJECTED = -9
+    let ready = false
+    let busy = false
+    let autoEnabled = false
+    let autoGeneration = 0
+    let fingerPresent = false
     let lastStatus = -1
-    let templateCount = -1
+    let lastId = -1
+    let lastScore = 0
+    let successCount = 0
+    let rejectionCount = 0
+    let librarySize = 256
+    let recognizedHandler: () => void = null
+    let rejectedHandler: () => void = null
+    let errorHandler: () => void = null
+    let enrollStepHandler: () => void = null
+    let enrollStep = 0
 
-    // No assumptions about the internal receive-buffer length or packet alignment.
-    // All reads use readBuffer(0), which drains currently available bytes.
-    function sendCommand(command: number): void {
-        const frame = pins.createBuffer(12)
-        frame[0] = START_HI
-        frame[1] = START_LO
-        frame[2] = 0xFF
-        frame[3] = 0xFF
-        frame[4] = 0xFF
-        frame[5] = 0xFF
-        frame[6] = COMMAND_PACKET
-        frame[7] = 0
-        frame[8] = 3 // command byte plus two checksum bytes
-        frame[9] = command
-        const checksum = COMMAND_PACKET + 3 + command
-        frame[10] = (checksum >> 8) & 255
-        frame[11] = checksum & 255
-        serial.writeBuffer(frame)
+    function transmit(data: number[]): void {
+        const payloadLength = data.length + 2
+        const packet = pins.createBuffer(9 + payloadLength)
+        packet[0] = 0xEF; packet[1] = 0x01
+        packet[2] = 0xFF; packet[3] = 0xFF; packet[4] = 0xFF; packet[5] = 0xFF
+        packet[6] = 0x01
+        packet[7] = (payloadLength >> 8) & 255
+        packet[8] = payloadLength & 255
+        let checksum = 0x01 + packet[7] + packet[8]
+        for (let i = 0; i < data.length; i++) {
+            packet[9 + i] = data[i] & 255
+            checksum += data[i] & 255
+        }
+        packet[9 + data.length] = (checksum >> 8) & 255
+        packet[10 + data.length] = checksum & 255
+        serial.writeBuffer(packet)
     }
 
-    // Returns ACK payload or null on malformed packet / timeout.
-    function receiveAck(timeoutMs: number): number[] {
-        const stream: number[] = []
-        const end = input.runningTime() + timeoutMs
-        while (input.runningTime() < end) {
-            const incoming = serial.readBuffer(0)
-            for (let i = 0; i < incoming.length; i++) stream.push(incoming[i])
-            // Synchronize on packet header; discard unrelated UART bytes.
-            while (stream.length >= 2 && (stream[0] !== START_HI || stream[1] !== START_LO)) {
-                stream.shift()
-            }
-            if (stream.length >= 9) {
-                const length = stream[7] * 256 + stream[8]
-                if (length < 3 || length > 128) return null
-                const fullLength = 9 + length
-                if (stream.length >= fullLength) {
-                    if (stream[2] !== 255 || stream[3] !== 255 || stream[4] !== 255 || stream[5] !== 255 || stream[6] !== ACK_PACKET) return null
-                    let sum = stream[6] + stream[7] + stream[8]
-                    for (let i = 9; i < fullLength - 2; i++) sum += stream[i]
-                    const receivedSum = stream[fullLength - 2] * 256 + stream[fullLength - 1]
-                    if ((sum & 65535) !== receivedSum) return null
-                    const payload: number[] = []
-                    for (let i = 9; i < fullLength - 2; i++) payload.push(stream[i])
-                    return payload
+    // Every byte is acquired with a bounded deadline; never readBuffer(1).
+    function readAck(timeoutMs: number): number[] {
+        const bytes: number[] = []
+        const deadline = input.runningTime() + timeoutMs
+        while (input.runningTime() < deadline) {
+            const part = serial.readBuffer(0)
+            for (let i = 0; i < part.length; i++) bytes.push(part[i])
+            while (bytes.length >= 2 && (bytes[0] !== 0xEF || bytes[1] !== 0x01)) bytes.shift()
+            if (bytes.length >= 9) {
+                const n = bytes[7] * 256 + bytes[8]
+                if (n < 3 || n > 128) return null
+                if (bytes.length >= 9 + n) {
+                    if (bytes[2] !== 255 || bytes[3] !== 255 || bytes[4] !== 255 || bytes[5] !== 255 || bytes[6] !== 7) return null
+                    let sum = bytes[6] + bytes[7] + bytes[8]
+                    for (let j = 9; j < 9 + n - 2; j++) sum += bytes[j]
+                    const received = bytes[9 + n - 2] * 256 + bytes[9 + n - 1]
+                    if ((sum & 65535) !== received) return null
+                    const result: number[] = []
+                    for (let j = 9; j < 9 + n - 2; j++) result.push(bytes[j])
+                    return result
                 }
             }
             basic.pause(5)
@@ -69,56 +72,251 @@ namespace AS608Smart {
         return null
     }
 
-    /**
-     * Configure serial communication with the fingerprint scanner.
-     * Connect scanner TX to the micro:bit RX pin and scanner RX to the TX pin.
-     */
-    //% blockId=as608smart_connect block="connect fingerprint scanner RX $rx TX $tx"
+    // Serial transaction lock shared by automatic scanning and enrollment.
+    function command(data: number[], timeoutMs: number): number[] {
+        if (!ready || busy) { lastStatus = BUSY; return null }
+        busy = true
+        serial.readBuffer(0)
+        transmit(data)
+        const response = readAck(timeoutMs)
+        busy = false
+        lastStatus = response && response.length > 0 ? response[0] : IO_ERROR
+        return response
+    }
+
+    function captured(): number {
+        const r = command([0x01], 1200)
+        return r ? r[0] : IO_ERROR
+    }
+
+    function convert(bufferId: number): number {
+        const r = command([0x02, bufferId], 1200)
+        return r ? r[0] : IO_ERROR
+    }
+
+    function findMatch(): number {
+        const r = command([0x04, 0x01, 0, 0, (librarySize >> 8) & 255, librarySize & 255], 1600)
+        if (!r) return IO_ERROR
+        if (r[0] === 9) return REJECTED
+        if (r[0] !== 0 || r.length < 5) return IO_ERROR
+        lastId = r[1] * 256 + r[2]
+        lastScore = r[3] * 256 + r[4]
+        return lastId
+    }
+
+    function identifyCore(): number {
+        const image = captured()
+        if (image === 2) return NO_FINGER
+        if (image !== 0) return IO_ERROR
+        if (convert(1) !== 0) return IO_ERROR
+        return findMatch()
+    }
+
+    function waitFingerState(present: boolean, timeoutMs: number): boolean {
+        const until = input.runningTime() + timeoutMs
+        while (input.runningTime() < until) {
+            const status = captured()
+            if (present && status === 0) return true
+            if (!present && status === 2) return true
+            if (status !== 0 && status !== 2) return false
+            basic.pause(120)
+        }
+        lastStatus = -5
+        return false
+    }
+
+    /** Connect AS608 TX -> micro:bit RX; AS608 RX -> micro:bit TX. */
+    //% blockId=as608_v2_connect block="connect fingerprint scanner RX $rx TX $tx"
     //% rx.defl=SerialPin.P13 tx.defl=SerialPin.P14
     //% weight=100 group="Connection"
     export function connect(rx: SerialPin, tx: SerialPin): void {
-        configured = false
-        if (inTransaction) return
-        serial.redirect(tx, rx, UART_BAUD)
+        autoEnabled = false
+        autoGeneration++
+        if (busy) { lastStatus = BUSY; return }
+        serial.redirect(tx, rx, BAUD)
         serial.setRxBufferSize(128)
         serial.setTxBufferSize(64)
         serial.readBuffer(0)
-        templateCount = -1
+        ready = true
         lastStatus = -1
-        configured = true
+        fingerPresent = false
+        lastId = -1
     }
 
-    /** Check the sensor by requesting its stored fingerprint count. */
-    //% blockId=as608smart_check block="fingerprint sensor connected?"
-    //% weight=90 group="Connection"
+    /** Ping sensor with a template count request. */
+    //% blockId=as608_v2_check block="fingerprint sensor connected?"
+    //% weight=95 group="Connection"
     export function isConnected(): boolean {
-        if (!configured || inTransaction) return false
-        inTransaction = true
-        lastStatus = -1
-        templateCount = -1
-        // Discard stale bytes from an earlier operation before sending a new command.
-        serial.readBuffer(0)
-        sendCommand(READ_TEMPLATE_COUNT)
-        const answer = receiveAck(1200)
-        inTransaction = false
-        if (!answer || answer.length < 3) return false
-        lastStatus = answer[0]
-        if (lastStatus !== 0) return false
-        templateCount = answer[1] * 256 + answer[2]
+        const r = command([0x1D], 1300)
+        return !!r && r.length >= 3 && r[0] === 0
+    }
+
+    /** Read actual count, or -1 on communication error. */
+    //% blockId=as608_v2_count block="stored fingerprints"
+    //% weight=90 group="Fingerprints"
+    export function storedFingerprints(): number {
+        const r = command([0x1D], 1300)
+        return r && r[0] === 0 && r.length >= 3 ? r[1] * 256 + r[2] : -1
+    }
+
+    /** Identify one finger: ID >= 0; -3 no finger; -9 unknown; -2 error. */
+    //% blockId=as608_v2_identify block="identify finger once"
+    //% weight=85 group="Recognition"
+    export function identifyOnce(): number {
+        if (autoEnabled || busy) { lastStatus = BUSY; return BUSY }
+        lastId = -1
+        return identifyCore()
+    }
+
+    /** Begin continuous recognition. Only one event is sent per finger placement. */
+    //% blockId=as608_v2_start block="start automatic fingerprint scanning"
+    //% weight=100 group="Recognition"
+    export function startAutomatic(): void {
+        if (!ready || autoEnabled) return
+        autoEnabled = true
+        autoGeneration++
+        const generation = autoGeneration
+        control.inBackground(function () {
+            let consecutiveErrors = 0
+            while (autoEnabled && generation === autoGeneration) {
+                if (busy) { basic.pause(100); continue }
+                const result = identifyCore()
+                if (result === NO_FINGER) {
+                    fingerPresent = false
+                    consecutiveErrors = 0
+                    basic.pause(130)
+                    continue
+                }
+                if (result === BUSY) { basic.pause(100); continue }
+                if (result === IO_ERROR) {
+                    consecutiveErrors++
+                    if (consecutiveErrors === 1 && errorHandler) control.runInParallel(function () { errorHandler() })
+                    basic.pause(400)
+                    continue
+                }
+                consecutiveErrors = 0
+                if (!fingerPresent) {
+                    fingerPresent = true
+                    if (result >= 0) {
+                        successCount++
+                        if (recognizedHandler) control.runInParallel(function () { recognizedHandler() })
+                    } else if (result === REJECTED) {
+                        rejectionCount++
+                        if (rejectedHandler) control.runInParallel(function () { rejectedHandler() })
+                    } else {
+                        if (errorHandler) control.runInParallel(function () { errorHandler() })
+                    }
+                }
+                // Do not scan same held finger again. Poll for removal only.
+                while (autoEnabled && generation === autoGeneration && fingerPresent) {
+                    if (!busy) {
+                        const state = captured()
+                        if (state === 2) fingerPresent = false
+                    }
+                    basic.pause(160)
+                }
+                basic.pause(120)
+            }
+        })
+    }
+
+    /** Stop scanning; current UART command finishes within its timeout. */
+    //% blockId=as608_v2_stop block="stop automatic fingerprint scanning"
+    //% weight=95 group="Recognition"
+    export function stopAutomatic(): void {
+        autoEnabled = false
+        autoGeneration++
+    }
+
+    //% blockId=as608_v2_recognized block="on fingerprint recognized"
+    //% weight=90 group="Events" draggableParameters=false
+    export function onRecognized(handler: () => void): void { recognizedHandler = handler }
+
+    //% blockId=as608_v2_rejected block="on fingerprint rejected"
+    //% weight=85 group="Events"
+    export function onRejected(handler: () => void): void { rejectedHandler = handler }
+
+    //% blockId=as608_v2_error block="on fingerprint communication error"
+    //% weight=80 group="Events"
+    export function onError(handler: () => void): void { errorHandler = handler }
+
+    /** Finger ID from most recent successful recognition. */
+    //% blockId=as608_v2_lastid block="last fingerprint ID"
+    //% weight=80 group="Recognition"
+    export function lastFingerprintId(): number { return lastId }
+
+    //% blockId=as608_v2_score block="last match confidence"
+    //% weight=65 group="Recognition" advanced=true
+    export function lastConfidence(): number { return lastScore }
+
+    /** Enrollment stages: 1 first placement, 2 remove, 3 second placement, 4 saved. */
+    //% blockId=as608_v2_enrollstep block="enrollment step"
+    //% weight=80 group="Fingerprints"
+    export function enrollmentStep(): number { return enrollStep }
+
+    //% blockId=as608_v2_enroll_event block="on enrollment step changed"
+    //% weight=75 group="Events"
+    export function onEnrollmentStep(handler: () => void): void { enrollStepHandler = handler }
+
+    function updateStep(step: number): void {
+        enrollStep = step
+        if (enrollStepHandler) control.runInParallel(function () { enrollStepHandler() })
+    }
+
+    /** Two placements with a removal in between; blocks until done (up to ~35 s). Stop automatic scanning first. */
+    //% blockId=as608_v2_enroll block="enroll fingerprint with ID $id"
+    //% id.min=0 id.max=255 id.defl=1
+    //% weight=100 group="Fingerprints"
+    export function enrollFingerprint(id: number): boolean {
+        if (autoEnabled || busy || !ready || id < 0 || id > 255) { lastStatus = BUSY; return false }
+        updateStep(1)
+        if (!waitFingerState(true, 12000)) { updateStep(-1); return false }
+        if (convert(1) !== 0) { updateStep(-1); return false }
+        updateStep(2)
+        if (!waitFingerState(false, 8000)) { updateStep(-1); return false }
+        updateStep(3)
+        if (!waitFingerState(true, 12000)) { updateStep(-1); return false }
+        if (convert(2) !== 0) { updateStep(-1); return false }
+        const combined = command([0x05], 2000)
+        if (!combined || combined[0] !== 0) { updateStep(-1); return false }
+        const stored = command([0x06, 1, (id >> 8) & 255, id & 255], 2000)
+        if (!stored || stored[0] !== 0) { updateStep(-1); return false }
+        updateStep(4)
         return true
     }
 
-    /** Most recent sensor response code; -1 means no valid response. */
-    //% blockId=as608smart_status block="last sensor status"
-    //% weight=80 group="Connection" advanced=true
-    export function lastSensorStatus(): number {
-        return lastStatus
+    /** Delete one fingerprint. Stop automatic scanning first. */
+    //% blockId=as608_v2_delete block="delete fingerprint ID $id"
+    //% id.min=0 id.max=255 id.defl=1
+    //% weight=90 group="Fingerprints"
+    export function deleteFingerprint(id: number): boolean {
+        if (autoEnabled || busy || id < 0 || id > 255) { lastStatus = BUSY; return false }
+        const r = command([0x0C, (id >> 8) & 255, id & 255, 0, 1], 2000)
+        return !!r && r[0] === 0
     }
 
-    /** Number of stored fingerprints from the last successful connection check. */
-    //% blockId=as608smart_count block="stored fingerprints (last check)"
-    //% weight=70 group="Connection"
-    export function storedFingerprints(): number {
-        return templateCount
+    /** WARNING: permanently delete all stored fingerprints. */
+    //% blockId=as608_v2_clear block="DELETE ALL fingerprints"
+    //% weight=60 group="Fingerprints" advanced=true
+    export function deleteAllFingerprints(): boolean {
+        if (autoEnabled || busy) { lastStatus = BUSY; return false }
+        const r = command([0x0D], 2000)
+        return !!r && r[0] === 0
     }
+
+    //% blockId=as608_v2_status block="last sensor status"
+    //% weight=75 group="Diagnostics" advanced=true
+    export function lastSensorStatus(): number { return lastStatus }
+
+    //% blockId=as608_v2_success block="successful recognitions"
+    //% weight=70 group="Diagnostics" advanced=true
+    export function successfulRecognitions(): number { return successCount }
+
+    //% blockId=as608_v2_failed block="rejected recognitions"
+    //% weight=65 group="Diagnostics" advanced=true
+    export function rejectedRecognitions(): number { return rejectionCount }
+
+    //% blockId=as608_v2_reset block="reset recognition counters"
+    //% weight=60 group="Diagnostics" advanced=true
+    export function resetCounters(): void { successCount = 0; rejectionCount = 0 }
 }
