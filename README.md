@@ -1,3 +1,13 @@
+# AS608 Smart v2.0.0-beta.6 — Diagnostic GetImage bypass
+
+**Diagnostic pre-release; not hardware verified.** No changes to UART packet construction, wiring, baud rate, or v1.1.
+
+This release permits `identify finger once` to send **GetImage (0x01)** even if the initial ReadSysPara (0x0F) probe failed and `ready=false`. Only the GetImage command bypasses the ready guard; enrollment, auto-scanning, other commands remain guarded. If GetImage succeeds, subsequent Img2Tz/Search still require `ready=true`, so this is strictly a transport diagnostic, **not a full identification fix**.
+
+Test: `on start` → connect RX P13 TX P14 → pause 1000ms → `identify finger once` → show `UART transmitted bytes` → show `UART received bytes` → show `last sensor status` (with pauses between displays). Place finger on scanner during test.
+
+Expected: GetImage command TX length **12**; RX > 0 indicates some response. If RX=0 and status=-2, GetImage also timed out. If RX>0, report the values, even if identification returns -2.
+
 > **Beta 5 test:** Removes two pre-command `serial.readBuffer(0)` drains to align the UART send sequence with the working v1.1 driver. This is a hypothesis, not a confirmed hardware fix. Keep v1.1 unchanged.
 
 # AS608 Smart Fingerprint v2.0.0-beta.5

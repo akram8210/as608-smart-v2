@@ -3,7 +3,7 @@
  * AS608/ZFM-compatible 0xEF01 UART protocol, default 57600 baud.
  * MIT License. Not tested on physical hardware yet.
  */
-//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.5"
+//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.6"
 namespace AS608Smart {
     const BAUD = BaudRate.BaudRate57600
     const NO_FINGER = -3
@@ -111,8 +111,8 @@ namespace AS608Smart {
     }
 
     // Serial transaction lock shared by automatic scanning and enrollment.
-    function command(data: number[], timeoutMs: number): number[] {
-        if (!ready || busy) { lastStatus = BUSY; return null }
+    function command(data: number[], timeoutMs: number, diagnosticBypass: boolean = false): number[] {
+        if ((!ready && !diagnosticBypass) || busy) { lastStatus = BUSY; return null }
         busy = true
         diagnosticBytes = 0
         diagnosticFirstByte = -1
@@ -128,8 +128,8 @@ namespace AS608Smart {
         return response
     }
 
-    function captured(): number {
-        const r = command([0x01], 1200)
+    function captured(diagnosticBypass: boolean = false): number {
+        const r = command([0x01], 1200, diagnosticBypass)
         return r ? r[0] : IO_ERROR
     }
 
@@ -148,8 +148,8 @@ namespace AS608Smart {
         return lastId
     }
 
-    function identifyCore(): number {
-        const image = captured()
+    function identifyCore(diagnosticBypass: boolean = false): number {
+        const image = captured(diagnosticBypass)
         if (image === 2) return NO_FINGER
         if (image !== 0) return IO_ERROR
         if (convert(1) !== 0) return IO_ERROR
@@ -220,7 +220,9 @@ namespace AS608Smart {
     export function identifyOnce(): number {
         if (autoEnabled || busy) { lastStatus = BUSY; return BUSY }
         lastId = -1
-        return identifyCore()
+        // Diagnostic-only: permit GetImage (0x01) even if initial 0x0F probe failed.
+        // If image capture succeeds, subsequent conversion/search use normal readiness checks.
+        return identifyCore(true)
     }
 
     /** Begin continuous recognition. Only one event is sent per finger placement. */
