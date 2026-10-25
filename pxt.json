@@ -10,5 +10,8 @@
     "main.ts",
     "icon.png"
   ],
+  "testFiles": [
+    "test.ts"
+  ],
   "public": true
 }
