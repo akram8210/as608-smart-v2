@@ -11,7 +11,7 @@ The extension is designed primarily for educational demonstrations, technology l
 **Platform:** BBC micro:bit
 **Programming environment:** Microsoft MakeCode
 **Sensor:** AS608 UART Fingerprint Sensor
-**Version:** 2.0.0
+**Version:** 2.0.1
 **License:** MIT
 
 ---
