@@ -1,6 +1,6 @@
 {
   "name": "as608-smart-v2",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "AS608 Smart fingerprint sensor extension for BBC micro:bit (UART), with recognition, enrollment and fingerprint management",
   "license": "MIT",
   "dependencies": {
