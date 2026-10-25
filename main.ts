@@ -1,404 +1,651 @@
-/**
- * AS608 Smart Fingerprint v2 — independently written MakeCode driver.
- * AS608/ZFM-compatible 0xEF01 UART protocol, default 57600 baud.
- * MIT License. Not tested on physical hardware yet.
- */
-//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart · v2.0.0-beta.6"
-namespace AS608Smart {
-    const BAUD = BaudRate.BaudRate57600
-    const NO_FINGER = -3
-    const IO_ERROR = -2
-    const BUSY = -4
-    const REJECTED = -9
-    let ready = false
-    let busy = false
-    let autoEnabled = false
+//% color=#25858C icon="\uf2c2" weight=90 block="AS608 Smart"
+//% subcategories='["1. Setup", "2. Recognition", "3. Enrollment", "4. Management", "5. Developer"]'
+namespace AS608SmartV2 {
+    let lastResponse: number[] = []
+    let lastRxBytes = 0
+    let lastRxExpected = 0
+    let lastRxError = 0
+    let autoRunning = false
     let autoGeneration = 0
     let fingerPresent = false
-    let lastStatus = -1
-    let lastId = -1
-    let lastScore = 0
-    let successCount = 0
-    let rejectionCount = 0
-    let librarySize = 256
+    let noFingerCount = 0
+    let lastFingerID = -1
+    let lastEnrolledID = -1
+    let scannerBusy = false
+    let lastEnrollmentResult = -10
     let recognizedHandler: () => void = null
     let rejectedHandler: () => void = null
     let errorHandler: () => void = null
-    let enrollStepHandler: () => void = null
-    let enrollStep = 0
-    // UART diagnostics, reset on each transaction.
-    let diagnosticBytes = 0
-    let diagnosticFirstByte = -1
-    let diagnosticLastByte = -1
-    let diagnosticPacketStage = 0 // 0=no data, 1=EF, 2=EF01, 3=header, 4=complete
-    let diagnosticExpectedBytes = 0
-    let diagnosticTxBytes = 0
+    let firstScanHandler: () => void = null
+    let removeFingerHandler: () => void = null
+    let secondScanHandler: () => void = null
+    let enrollmentSuccessHandler: () => void = null
+    let enrollmentFailedHandler: () => void = null
 
-    function transmit(data: number[]): void {
-        const payloadLength = data.length + 2
-        const packet = pins.createBuffer(9 + payloadLength)
-        packet[0] = 0xEF; packet[1] = 0x01
-        packet[2] = 0xFF; packet[3] = 0xFF; packet[4] = 0xFF; packet[5] = 0xFF
+
+
+
+
+    // Returns the sensor's confirmation byte, or -2 (timeout),
+    // -3 (malformed packet). Validates full ACK and checksum.
+    function sendCommand(data: number[], timeout: number = 3000): number {
+        serial.readBuffer(0)
+        lastResponse = []
+        lastRxBytes = 0
+        lastRxExpected = 0
+        lastRxError = 0
+        let packet = pins.createBuffer(11 + data.length)
+        packet.setNumber(NumberFormat.UInt16BE, 0, 0xEF01)
+        packet.setNumber(NumberFormat.UInt32BE, 2, 0xFFFFFFFF)
         packet[6] = 0x01
-        packet[7] = (payloadLength >> 8) & 255
-        packet[8] = payloadLength & 255
-        let checksum = 0x01 + packet[7] + packet[8]
+        packet.setNumber(NumberFormat.UInt16BE, 7, data.length + 2)
+        let checksum = 0x01 + data.length + 2
         for (let i = 0; i < data.length; i++) {
-            packet[9 + i] = data[i] & 255
-            checksum += data[i] & 255
+            packet[9 + i] = data[i]
+            checksum += data[i]
         }
-        packet[9 + data.length] = (checksum >> 8) & 255
-        packet[10 + data.length] = checksum & 255
-        diagnosticTxBytes = packet.length
+        packet.setNumber(NumberFormat.UInt16BE, 9 + data.length, checksum & 0xFFFF)
         serial.writeBuffer(packet)
-    }
-
-    // Receive a complete AS608 acknowledgment using a deadline for the whole frame.
-    // Parse incrementally, including when UART chunks arrive split across reads.
-    // Avoid blocking readBuffer(1): an incomplete frame must not freeze micro:bit.
-    function readAck(timeoutMs: number): number[] {
-        let bytes: number[] = []
+        let received: number[] = []
         let expected = 0
-        const deadline = input.runningTime() + timeoutMs
+        let deadline = input.runningTime() + timeout
         while (input.runningTime() < deadline) {
-            const chunk = serial.readBuffer(0)
+            let chunk = serial.readBuffer(0)
             for (let i = 0; i < chunk.length; i++) {
-                const b = chunk[i]
-                diagnosticBytes++
-                if (diagnosticFirstByte < 0) diagnosticFirstByte = b
-                diagnosticLastByte = b
-                if (bytes.length === 0 && b !== 0xEF) continue
-                if (bytes.length === 1 && b !== 0x01) {
-                    bytes = []
-                    if (b === 0xEF) bytes.push(b)
+                let b = chunk[i]
+                if (received.length == 0 && b != 0xEF) continue
+                if (received.length == 1 && b != 0x01) {
+                    received = []
+                    if (b == 0xEF) received.push(b)
                     continue
                 }
-                bytes.push(b)
-                if (bytes.length === 1) diagnosticPacketStage = 1
-                if (bytes.length === 2) diagnosticPacketStage = 2
-                if (bytes.length === 9) {
-                    const payloadSize = bytes[7] * 256 + bytes[8]
-                    if (payloadSize < 3 || payloadSize > 256) {
-                        lastStatus = -12 // invalid frame length
-                        return null
+                received.push(b)
+                lastRxBytes = received.length
+                if (received.length == 9) {
+                    let payloadLength = received[7] * 256 + received[8]
+                    if (payloadLength < 3 || payloadLength > 256) {
+                        lastRxError = -3
+                        return -3
                     }
-                    expected = 9 + payloadSize
-                    diagnosticExpectedBytes = expected
-                    diagnosticPacketStage = 3
+                    expected = 9 + payloadLength
+                    lastRxExpected = expected
                 }
-                if (expected > 0 && bytes.length === expected) {
-                    if (bytes[2] !== 255 || bytes[3] !== 255 || bytes[4] !== 255 || bytes[5] !== 255 || bytes[6] !== 7) {
-                        lastStatus = -13 // unexpected packet address/type
-                        return null
+                if (expected > 0 && received.length == expected) {
+                    if (received[2] != 0xFF || received[3] != 0xFF ||
+                        received[4] != 0xFF || received[5] != 0xFF || received[6] != 0x07) {
+                        lastRxError = -3
+                        return -3
                     }
-                    let checksum = 0
-                    for (let j = 6; j < expected - 2; j++) checksum += bytes[j]
-                    const received = bytes[expected - 2] * 256 + bytes[expected - 1]
-                    if ((checksum & 65535) !== received) {
-                        lastStatus = -14 // checksum mismatch
-                        return null
+                    let sum = 0
+                    for (let j = 6; j < expected - 2; j++) sum += received[j]
+                    let actual = received[expected - 2] * 256 + received[expected - 1]
+                    if ((sum & 0xFFFF) != actual) {
+                        lastRxError = -3
+                        return -3
                     }
-                    diagnosticPacketStage = 4
-                    const payload: number[] = []
-                    for (let j = 9; j < expected - 2; j++) payload.push(bytes[j])
-                    return payload
+                    lastResponse = received
+                    return received[9]
                 }
             }
             basic.pause(2)
         }
-        lastStatus = -2 // no complete acknowledgment within timeout
-        return null
+        lastRxError = -2
+        return -2
     }
 
-    // Serial transaction lock shared by automatic scanning and enrollment.
-    function command(data: number[], timeoutMs: number, diagnosticBypass: boolean = false): number[] {
-        if ((!ready && !diagnosticBypass) || busy) { lastStatus = BUSY; return null }
-        busy = true
-        diagnosticBytes = 0
-        diagnosticFirstByte = -1
-        diagnosticLastByte = -1
-        diagnosticPacketStage = 0
-        diagnosticExpectedBytes = 0
-        diagnosticTxBytes = 0
-        // No pre-transmission UART drain: match the stable v1.1 send sequence.
-        transmit(data)
-        const response = readAck(timeoutMs)
-        busy = false
-        if (response && response.length > 0) lastStatus = response[0]
-        return response
-    }
-
-    function captured(diagnosticBypass: boolean = false): number {
-        const r = command([0x01], 1200, diagnosticBypass)
-        return r ? r[0] : IO_ERROR
-    }
-
-    function convert(bufferId: number): number {
-        const r = command([0x02, bufferId], 1200)
-        return r ? r[0] : IO_ERROR
-    }
-
-    function findMatch(): number {
-        const r = command([0x04, 0x01, 0, 0, (librarySize >> 8) & 255, librarySize & 255], 1600)
-        if (!r) return IO_ERROR
-        if (r[0] === 9) return REJECTED
-        if (r[0] !== 0 || r.length < 5) return IO_ERROR
-        lastId = r[1] * 256 + r[2]
-        lastScore = r[3] * 256 + r[4]
-        return lastId
-    }
-
-    function identifyCore(diagnosticBypass: boolean = false): number {
-        const image = captured(diagnosticBypass)
-        if (image === 2) return NO_FINGER
-        if (image !== 0) return IO_ERROR
-        if (convert(1) !== 0) return IO_ERROR
-        return findMatch()
-    }
-
-    function waitFingerState(present: boolean, timeoutMs: number): boolean {
-        const until = input.runningTime() + timeoutMs
-        while (input.runningTime() < until) {
-            const status = captured()
-            if (present && status === 0) return true
-            if (!present && status === 2) return true
-            if (status !== 0 && status !== 2) return false
-            basic.pause(120)
+    // Pause auto scan and wait for any in-flight UART command.
+    // Returns 1 if scanning was on, 0 otherwise, or -10 if busy.
+    function beginExclusive(): number {
+        let resume = autoRunning ? 1 : 0
+        stopAutomatic()
+        let deadline = input.runningTime() + 4500
+        while (scannerBusy && input.runningTime() < deadline) basic.pause(20)
+        if (scannerBusy) {
+            if (resume == 1) startAutomatic()
+            return -10
         }
-        lastStatus = -5
-        return false
+        scannerBusy = true
+        return resume
     }
 
-    /** Connect AS608 TX -> micro:bit RX; AS608 RX -> micro:bit TX. */
-    //% blockId=as608_v2_connect block="connect fingerprint scanner RX $rx TX $tx"
-    //% rx.defl=SerialPin.P13 tx.defl=SerialPin.P14
-    //% weight=100 group="Connection"
+    function endExclusive(resume: number): void {
+        scannerBusy = false
+        if (resume == 1) startAutomatic()
+    }
+
+
+
+
+
+    function identifyInternal(): number {
+        let r = sendCommand([0x01])
+        if (r == 0x02) return -3
+        if (r != 0) return r < 0 ? r : -5
+        basic.pause(100)
+        r = sendCommand([0x02, 0x01])
+        if (r != 0) return r < 0 ? r : -5
+        basic.pause(100)
+        r = sendCommand([0x04, 0x01, 0x00, 0x00, 0x01, 0x00])
+        if (r == 0x09) return -9
+        if (r != 0) return r < 0 ? r : -5
+        if (lastResponse.length < 14) return -5
+        return lastResponse[10] * 256 + lastResponse[11]
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+    function countInternal(): number {
+        let r = sendCommand([0x1D])
+        if (r != 0) return r < 0 ? r : -5
+        if (lastResponse.length < 14) return -5
+        return lastResponse[10] * 256 + lastResponse[11]
+    }
+
+
+
+    // Index table ACK: header 9, confirmation 1, bitmap 32, checksum 2.
+    function readIndexInternal(): number[] {
+        let r = sendCommand([0x1F, 0x00], 5000)
+        if (r != 0 || lastResponse.length < 44) return []
+        let bitmap: number[] = []
+        for (let i = 0; i < 32; i++) bitmap.push(lastResponse[10 + i])
+        return bitmap
+    }
+
+    function firstFreeInternal(): number {
+        let bitmap = readIndexInternal()
+        if (bitmap.length != 32) return lastRxError < 0 ? lastRxError : -5
+        for (let id = 0; id < 256; id++) {
+            if ((bitmap[Math.idiv(id, 8)] & (1 << (id % 8))) == 0) return id
+        }
+        return -1
+    }
+
+
+
+
+
+    function waitForFinger(timeout: number): number {
+        let deadline = input.runningTime() + timeout
+        while (input.runningTime() < deadline) {
+            let r = sendCommand([0x01])
+            if (r == 0) return 1
+            if (r < 0) return r
+            if (r != 0x02) return -5
+            basic.pause(200)
+        }
+        return -4
+    }
+
+    function waitForRemoval(timeout: number): number {
+        let deadline = input.runningTime() + timeout
+        let absent = 0
+        while (input.runningTime() < deadline) {
+            let r = sendCommand([0x01])
+            if (r == 0x02) {
+                absent++
+                if (absent >= 2) return 1
+            } else if (r == 0) {
+                absent = 0
+            } else {
+                return r < 0 ? r : -5
+            }
+            basic.pause(200)
+        }
+        return -4
+    }
+
+    // Returns ID >= 0 on success; negative error on failure.
+    // -1 full, -2 timeout UART, -3 invalid ACK, -4 finger timeout,
+    // -5 sensor/image error, -6 mismatch, -7 storage, -9 duplicate,
+    // -10 busy.
+
+
+
+
+    function enrollCore(showUI: boolean): number {
+        let mode = beginExclusive()
+        if (mode < 0) {
+            lastEnrollmentResult = mode
+            if (showUI) { basic.showIcon(IconNames.No); basic.showString("ERR") }
+            return mode
+        }
+        let result = firstFreeInternal()
+        if (result >= 0) {
+            let id = result
+            if (showUI) basic.showString("F1")
+            if (firstScanHandler) control.runInParallel(function () { firstScanHandler() })
+            result = waitForFinger(15000)
+            if (result == 1) {
+                result = sendCommand([0x02, 0x01])
+                if (result == 0) {
+                    // Prevent enrolling a finger that is already registered.
+                    let search = sendCommand([0x04, 0x01, 0x00, 0x00, 0x01, 0x00])
+                    if (search == 0) result = -9
+                    else if (search != 0x09) result = search < 0 ? search : -5
+                    else {
+                        if (showUI) basic.showString("OFF")
+                        if (removeFingerHandler) control.runInParallel(function () { removeFingerHandler() })
+                        result = waitForRemoval(15000)
+                        if (result == 1) {
+                            if (showUI) basic.showString("F2")
+                            if (secondScanHandler) control.runInParallel(function () { secondScanHandler() })
+                            result = waitForFinger(15000)
+                            if (result == 1) {
+                                result = sendCommand([0x02, 0x02])
+                                if (result == 0) {
+                                    result = sendCommand([0x05])
+                                    if (result == 0) {
+                                        result = sendCommand([0x06, 0x01, (id >> 8) & 0xFF, id & 0xFF])
+                                        if (result == 0) {
+                                            lastEnrolledID = id
+                                            result = id
+                                        } else if (result > 0) result = -7
+                                    } else if (result > 0) result = -6
+                                } else if (result > 0) result = -5
+                            }
+                        }
+                    }
+                } else if (result > 0) result = -5
+            }
+        }
+        endExclusive(mode)
+        lastEnrollmentResult = result
+        if (showUI) {
+            if (result >= 0) {
+                basic.showIcon(IconNames.Yes)
+                basic.showString("ID")
+                basic.showNumber(result)
+            } else {
+                basic.showIcon(IconNames.No)
+                basic.showString("ERR")
+                basic.showNumber(result)
+            }
+        }
+        if (result >= 0) {
+            if (enrollmentSuccessHandler) control.runInParallel(function () { enrollmentSuccessHandler() })
+        } else {
+            if (enrollmentFailedHandler) control.runInParallel(function () { enrollmentFailedHandler() })
+        }
+        return result
+    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // Student-facing blocks first; developer diagnostics last.
+
+    //% block="connect AS608 RX $rx TX $tx"
+    //% rx.defl=SerialPin.P14 tx.defl=SerialPin.P13
+    //% subcategory="1. Setup" weight=100
     export function connect(rx: SerialPin, tx: SerialPin): void {
-        autoEnabled = false
-        autoGeneration++
-        if (busy) { lastStatus = BUSY; return }
-        serial.redirect(tx, rx, BAUD)
-        basic.pause(500) // allow the UART redirect and sensor to settle
-        // No pre-probe UART drain: match the stable v1.1 initialization.
-        ready = true // enable the command transaction for the initial probe
-        lastStatus = -1
-        fingerPresent = false
-        lastId = -1
-        // Unlike beta.3, perform a real AS608 system-parameters request (0x0F)
-        // during connection, as the verified v1.1 initialization sequence does.
-        // Preserve UART diagnostics from this probe for troubleshooting.
-        const response = command([0x0F], 2000)
-        if (!response || response.length < 17 || response[0] !== 0) {
-            ready = false
-            if (response && response[0] === 0 && response.length < 17) lastStatus = -15
-            return
+        stopAutomatic()
+        // The 0x1F template-index ACK is 44 bytes: the default UART
+        // receive buffer can be too small and silently drop bytes.
+        serial.setRxBufferSize(128)
+        serial.redirect(tx, rx, BaudRate.BaudRate57600)
+        basic.pause(500)
+    }
+
+    //% block="connect scanner and start recognition RX $rx TX $tx"
+    //% rx.defl=SerialPin.P14 tx.defl=SerialPin.P13
+    //% subcategory="1. Setup" weight=99
+    //% tooltip="Connects AS608 and starts automatic recognition. Use only once in on start."
+    export function connectAndStart(rx: SerialPin, tx: SerialPin): void {
+        connect(rx, tx)
+        let ok = testConnection()
+        if (ok == 1) {
+            basic.showIcon(IconNames.Yes)
+            startAutomatic()
+        } else {
+            basic.showIcon(IconNames.No)
+            basic.showString("ERR")
         }
-        // System parameters response: confirmation, status(2), system ID(2),
-        // library capacity(2), security(2), address(4), packet length(2), baud(2).
-        const capacity = response[5] * 256 + response[6]
-        if (capacity > 0) librarySize = capacity
     }
 
-    /** Ping sensor with a template count request. */
-    //% blockId=as608_v2_check block="fingerprint sensor connected?"
-    //% weight=95 group="Connection"
-    export function isConnected(): boolean {
-        return ready
-    }
-
-    /** Read actual count, or -1 on communication error. */
-    //% blockId=as608_v2_count block="stored fingerprints"
-    //% weight=90 group="Fingerprints"
-    export function storedFingerprints(): number {
-        const r = command([0x1D], 2000)
-        return r && r[0] === 0 && r.length >= 3 ? r[1] * 256 + r[2] : -1
-    }
-
-    /** Identify one finger: ID >= 0; -3 no finger; -9 unknown; -2 error. */
-    //% blockId=as608_v2_identify block="identify finger once"
-    //% weight=85 group="Recognition"
-    export function identifyOnce(): number {
-        if (autoEnabled || busy) { lastStatus = BUSY; return BUSY }
-        lastId = -1
-        // Diagnostic-only: permit GetImage (0x01) even if initial 0x0F probe failed.
-        // If image capture succeeds, subsequent conversion/search use normal readiness checks.
-        return identifyCore(true)
-    }
-
-    /** Begin continuous recognition. Only one event is sent per finger placement. */
-    //% blockId=as608_v2_start block="start automatic fingerprint scanning"
-    //% weight=100 group="Recognition"
+    //% block="start automatic fingerprint scanning"
+    //% subcategory="2. Recognition" weight=90
     export function startAutomatic(): void {
-        if (!ready || autoEnabled) return
-        autoEnabled = true
-        autoGeneration++
-        const generation = autoGeneration
+        if (autoRunning) return
+        autoRunning = true
+        let generation = ++autoGeneration
+        fingerPresent = false
+        noFingerCount = 0
         control.inBackground(function () {
-            let consecutiveErrors = 0
-            while (autoEnabled && generation === autoGeneration) {
-                if (busy) { basic.pause(100); continue }
-                const result = identifyCore()
-                if (result === NO_FINGER) {
-                    fingerPresent = false
-                    consecutiveErrors = 0
-                    basic.pause(130)
+            while (autoRunning && generation == autoGeneration) {
+                if (scannerBusy) {
+                    basic.pause(100)
                     continue
                 }
-                if (result === BUSY) { basic.pause(100); continue }
-                if (result === IO_ERROR) {
-                    consecutiveErrors++
-                    if (consecutiveErrors === 1 && errorHandler) control.runInParallel(function () { errorHandler() })
-                    basic.pause(400)
-                    continue
-                }
-                consecutiveErrors = 0
-                if (!fingerPresent) {
-                    fingerPresent = true
-                    if (result >= 0) {
-                        successCount++
+                scannerBusy = true
+                let r = identifyInternal()
+                scannerBusy = false
+                if (!autoRunning || generation != autoGeneration) break
+                if (r >= 0) {
+                    noFingerCount = 0
+                    if (!fingerPresent) {
+                        fingerPresent = true
+                        lastFingerID = r
                         if (recognizedHandler) control.runInParallel(function () { recognizedHandler() })
-                    } else if (result === REJECTED) {
-                        rejectionCount++
+                    }
+                } else if (r == -3) {
+                    noFingerCount++
+                    if (noFingerCount >= 2) fingerPresent = false
+                } else if (r == -9) {
+                    noFingerCount = 0
+                    if (!fingerPresent) {
+                        fingerPresent = true
                         if (rejectedHandler) control.runInParallel(function () { rejectedHandler() })
-                    } else {
-                        if (errorHandler) control.runInParallel(function () { errorHandler() })
                     }
+                } else if (r == -2) {
+                    if (errorHandler) control.runInParallel(function () { errorHandler() })
+                } else {
+                    noFingerCount = 0
                 }
-                // Do not scan same held finger again. Poll for removal only.
-                while (autoEnabled && generation === autoGeneration && fingerPresent) {
-                    if (!busy) {
-                        const state = captured()
-                        if (state === 2) fingerPresent = false
-                    }
-                    basic.pause(160)
-                }
-                basic.pause(120)
+                basic.pause(150)
             }
         })
     }
 
-    /** Stop scanning; current UART command finishes within its timeout. */
-    //% blockId=as608_v2_stop block="stop automatic fingerprint scanning"
-    //% weight=95 group="Recognition"
+    //% block="stop automatic fingerprint scanning"
+    //% subcategory="2. Recognition" weight=89
     export function stopAutomatic(): void {
-        autoEnabled = false
+        autoRunning = false
         autoGeneration++
     }
 
-    //% blockId=as608_v2_recognized block="on fingerprint recognized"
-    //% weight=90 group="Events" draggableParameters=false
+    //% block="on fingerprint recognized"
+    //% subcategory="2. Recognition" weight=88
     export function onRecognized(handler: () => void): void { recognizedHandler = handler }
 
-    //% blockId=as608_v2_rejected block="on fingerprint rejected"
-    //% weight=85 group="Events"
+    //% block="on fingerprint rejected"
+    //% subcategory="2. Recognition" weight=87
     export function onRejected(handler: () => void): void { rejectedHandler = handler }
 
-    //% blockId=as608_v2_error block="on fingerprint communication error"
-    //% weight=80 group="Events"
-    export function onError(handler: () => void): void { errorHandler = handler }
+    //% block="last recognized fingerprint ID"
+    //% subcategory="2. Recognition" weight=86
+    export function lastID(): number { return lastFingerID }
 
-    /** Finger ID from most recent successful recognition. */
-    //% blockId=as608_v2_lastid block="last fingerprint ID"
-    //% weight=80 group="Recognition"
-    export function lastFingerprintId(): number { return lastId }
-
-    //% blockId=as608_v2_score block="last match confidence"
-    //% weight=65 group="Recognition" advanced=true
-    export function lastConfidence(): number { return lastScore }
-
-    /** Enrollment stages: 1 first placement, 2 remove, 3 second placement, 4 saved. */
-    //% blockId=as608_v2_enrollstep block="enrollment step"
-    //% weight=80 group="Fingerprints"
-    export function enrollmentStep(): number { return enrollStep }
-
-    //% blockId=as608_v2_enroll_event block="on enrollment step changed"
-    //% weight=75 group="Events"
-    export function onEnrollmentStep(handler: () => void): void { enrollStepHandler = handler }
-
-    function updateStep(step: number): void {
-        enrollStep = step
-        if (enrollStepHandler) control.runInParallel(function () { enrollStepHandler() })
+    //% block="enroll new fingerprint automatically"
+    //% subcategory="3. Enrollment" weight=80
+    export function enrollNewFinger(): number {
+        return enrollCore(true)
     }
 
-    /** Two placements with a removal in between; blocks until done (up to ~35 s). Stop automatic scanning first. */
-    //% blockId=as608_v2_enroll block="enroll fingerprint with ID $id"
-    //% id.min=0 id.max=255 id.defl=1
-    //% weight=100 group="Fingerprints"
-    export function enrollFingerprint(id: number): boolean {
-        if (autoEnabled || busy || !ready || id < 0 || id > 255) { lastStatus = BUSY; return false }
-        updateStep(1)
-        if (!waitFingerState(true, 12000)) { updateStep(-1); return false }
-        if (convert(1) !== 0) { updateStep(-1); return false }
-        updateStep(2)
-        if (!waitFingerState(false, 8000)) { updateStep(-1); return false }
-        updateStep(3)
-        if (!waitFingerState(true, 12000)) { updateStep(-1); return false }
-        if (convert(2) !== 0) { updateStep(-1); return false }
-        const combined = command([0x05], 2000)
-        if (!combined || combined[0] !== 0) { updateStep(-1); return false }
-        const stored = command([0x06, 1, (id >> 8) & 255, id & 255], 2000)
-        if (!stored || stored[0] !== 0) { updateStep(-1); return false }
-        updateStep(4)
-        return true
+    // Student-friendly statement block: can be placed directly inside button events.
+    //% block="enroll new fingerprint"
+    //% subcategory="3. Enrollment" weight=81
+    //% tooltip="Enrolls a new finger with F1, OFF and F2 instructions on the micro:bit display."
+    export function enrollNewFingerEasy(): void {
+        enrollCore(true)
     }
 
-    /** Delete one fingerprint. Stop automatic scanning first. */
-    //% blockId=as608_v2_delete block="delete fingerprint ID $id"
-    //% id.min=0 id.max=255 id.defl=1
-    //% weight=90 group="Fingerprints"
-    export function deleteFingerprint(id: number): boolean {
-        if (autoEnabled || busy || id < 0 || id > 255) { lastStatus = BUSY; return false }
-        const r = command([0x0C, (id >> 8) & 255, id & 255, 0, 1], 2000)
-        return !!r && r[0] === 0
+    //% block="on enrollment success"
+    //% subcategory="3. Enrollment" weight=79
+    export function onEnrollmentSuccess(handler: () => void): void { enrollmentSuccessHandler = handler }
+
+    //% block="on enrollment failed"
+    //% subcategory="3. Enrollment" weight=78
+    export function onEnrollmentFailed(handler: () => void): void { enrollmentFailedHandler = handler }
+
+    //% block="last enrolled fingerprint ID"
+    //% subcategory="3. Enrollment" weight=77
+    export function lastEnrolledFingerID(): number { return lastEnrolledID }
+
+    //% block="fingerprint count"
+    //% subcategory="4. Management" weight=70
+    export function fingerprintCount(): number {
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let r = countInternal()
+        endExclusive(mode)
+        return r
     }
 
-    /** WARNING: permanently delete all stored fingerprints. */
-    //% blockId=as608_v2_clear block="DELETE ALL fingerprints"
-    //% weight=60 group="Fingerprints" advanced=true
-    export function deleteAllFingerprints(): boolean {
-        if (autoEnabled || busy) { lastStatus = BUSY; return false }
-        const r = command([0x0D], 2000)
-        return !!r && r[0] === 0
+    //% block="fingerprint ID $id exists"
+    //% id.min=0 id.max=255
+    //% subcategory="4. Management" weight=69
+    export function fingerprintExists(id: number): number {
+        if (id < 0 || id > 255 || id != Math.floor(id)) return -8
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let bitmap = readIndexInternal()
+        let r = bitmap.length == 32
+            ? ((bitmap[Math.idiv(id, 8)] & (1 << (id % 8))) != 0 ? 1 : 0)
+            : (lastRxError < 0 ? lastRxError : -5)
+        endExclusive(mode)
+        return r
     }
 
-    //% blockId=as608_v2_status block="last sensor status"
-    //% weight=75 group="Diagnostics" advanced=true
-    export function lastSensorStatus(): number { return lastStatus }
+    //% block="delete fingerprint $id and show result"
+    //% id.min=0 id.max=255 id.defl=0
+    //% subcategory="4. Management" weight=68
+    //% tooltip="Deletes one stored ID. Displays success or error on micro:bit. This cannot be undone."
+    export function deleteFingerEasy(id: number): void {
+        let result = deleteFinger(id)
+        if (result == 1) {
+            basic.showIcon(IconNames.Yes)
+        } else {
+            basic.showIcon(IconNames.No)
+            basic.showString("ERR")
+            basic.showNumber(result)
+        }
+    }
 
-    /** Number of bytes actually read from UART during the last sensor command. */
-    //% blockId=as608_v2_diagbytes block="UART received bytes"
-    //% weight=74 group="Diagnostics" advanced=true
-    export function uartReceivedBytes(): number { return diagnosticBytes }
+    // Student-friendly deletion by scanning a registered finger.
+    // The recognized ID is deleted only after a successful match.
+    //% block="delete fingerprint automatically"
+    //% subcategory="4. Management" weight=71
+    //% tooltip="Place a registered finger on AS608 to delete its stored fingerprint. This cannot be undone."
+    export function deleteFingerAutomatically(): void {
+        let mode = beginExclusive()
+        if (mode < 0) {
+            basic.showIcon(IconNames.No)
+            basic.showString("ERR")
+            basic.showNumber(mode)
+            return
+        }
+        basic.showString("FINGER")
+        let id = -4
+        let deadline = input.runningTime() + 15000
+        while (input.runningTime() < deadline) {
+            id = identifyInternal()
+            if (id >= 0 || id != -3) break
+            basic.pause(200)
+        }
+        let result = id
+        if (id >= 0) {
+            // Keep the UART exclusive throughout recognition and deletion.
+            let r = sendCommand([0x0C, (id >> 8) & 0xFF, id & 0xFF, 0x00, 0x01])
+            result = r == 0 ? 1 : (r < 0 ? r : -5)
+        }
+        endExclusive(mode)
+        if (result == 1) {
+            basic.showIcon(IconNames.Yes)
+            basic.showString("ID")
+            basic.showNumber(id)
+        } else {
+            basic.showIcon(IconNames.No)
+            basic.showString("ERR")
+            basic.showNumber(result)
+        }
+    }
 
-    /** First byte seen on UART during the last sensor command (-1 = none). */
-    //% blockId=as608_v2_diagfirst block="UART first byte"
-    //% weight=73 group="Diagnostics" advanced=true
-    export function uartFirstByte(): number { return diagnosticFirstByte }
+    // Teacher maintenance: erase the complete AS608 template database.
+    // AS608 Empty command (0x0D); success is confirmed by a subsequent count of zero.
+    //% block="delete all fingerprints"
+    //% subcategory="4. Management" weight=66
+    //% tooltip="Permanently erase every stored fingerprint. Verify that the sensor reports zero remaining fingerprints."
+    export function deleteAllFingerprints(): void {
+        let mode = beginExclusive()
+        if (mode < 0) {
+            basic.showIcon(IconNames.No)
+            basic.showString("ERR")
+            basic.showNumber(mode)
+            return
+        }
+        let result = sendCommand([0x0D], 5000)
+        if (result == 0) {
+            let remaining = countInternal()
+            result = remaining == 0 ? 1 : (remaining < 0 ? remaining : -5)
+        } else {
+            result = result < 0 ? result : -5
+        }
+        endExclusive(mode)
+        if (result == 1) {
+            basic.showIcon(IconNames.Yes)
+            basic.showNumber(0)
+        } else {
+            basic.showIcon(IconNames.No)
+            basic.showString("ERR")
+            basic.showNumber(result)
+        }
+    }
 
-    /** Parser progress: 0 none, 1 EF, 2 EF01, 3 header, 4 complete. */
-    //% blockId=as608_v2_diagstage block="UART packet stage"
-    //% weight=72 group="Diagnostics" advanced=true
-    export function uartPacketStage(): number { return diagnosticPacketStage }
+    //% block="fingerprint memory full"
+    //% subcategory="4. Management" weight=67
+    export function memoryFull(): boolean {
+        return nextFreeID() == -1
+    }
 
-    /** Expected complete packet size in bytes (0 if no valid header). */
-    //% blockId=as608_v2_diagexpected block="UART expected bytes"
-    //% weight=71 group="Diagnostics" advanced=true
-    export function uartExpectedBytes(): number { return diagnosticExpectedBytes }
+    //% block="test AS608 connection"
+    //% subcategory="5. Developer" weight=50
+    export function testConnection(): number {
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let r = sendCommand([0x0F])
+        endExclusive(mode)
+        return r == 0 ? 1 : (r < 0 ? r : -5)
+    }
 
-    /** Bytes in the most recent outgoing UART packet. */
-    //% blockId=as608_v2_diagtx block="UART transmitted bytes"
-    //% weight=70 group="Diagnostics" advanced=true
-    export function uartTransmittedBytes(): number { return diagnosticTxBytes }
+    //% block="capture finger"
+    //% subcategory="5. Developer" weight=49
+    export function captureFinger(): number {
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let r = sendCommand([0x01])
+        endExclusive(mode)
+        if (r == 0) return 1
+        if (r == 0x02) return 0
+        return r < 0 ? r : -5
+    }
 
-    //% blockId=as608_v2_success block="successful recognitions"
-    //% weight=70 group="Diagnostics" advanced=true
-    export function successfulRecognitions(): number { return successCount }
+    //% block="identify finger"
+    //% subcategory="5. Developer" weight=48
+    export function identifyFinger(): number {
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let r = identifyInternal()
+        endExclusive(mode)
+        return r
+    }
 
-    //% blockId=as608_v2_failed block="rejected recognitions"
-    //% weight=65 group="Diagnostics" advanced=true
-    export function rejectedRecognitions(): number { return rejectionCount }
+    //% block="next free fingerprint ID"
+    //% subcategory="5. Developer" weight=47
+    export function nextFreeID(): number {
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let r = firstFreeInternal()
+        endExclusive(mode)
+        return r
+    }
 
-    //% blockId=as608_v2_reset block="reset recognition counters"
-    //% weight=60 group="Diagnostics" advanced=true
-    export function resetCounters(): void { successCount = 0; rejectionCount = 0 }
+    //% block="enroll fingerprint without screen instructions"
+    //% subcategory="5. Developer" weight=46
+    //% tooltip="Advanced: enroll silently and handle steps with enrollment events."
+    export function enrollFingerSilent(): number {
+        return enrollCore(false)
+    }
+
+    //% blockHidden=true
+    //% block="on enrollment first scan"
+    //% subcategory="5. Developer" weight=45
+    export function onFirstScan(handler: () => void): void { firstScanHandler = handler }
+
+    //% blockHidden=true
+    //% block="on enrollment remove finger"
+    //% subcategory="5. Developer" weight=44
+    export function onRemoveFinger(handler: () => void): void { removeFingerHandler = handler }
+
+    //% blockHidden=true
+    //% block="on enrollment second scan"
+    //% subcategory="5. Developer" weight=43
+    export function onSecondScan(handler: () => void): void { secondScanHandler = handler }
+
+    //% block="delete fingerprint ID $id"
+    //% id.min=0 id.max=255
+    //% subcategory="5. Developer" weight=42
+    export function deleteFinger(id: number): number {
+        if (id < 0 || id > 255 || id != Math.floor(id)) return -8
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let r = sendCommand([0x0C, (id >> 8) & 0xFF, id & 0xFF, 0x00, 0x01])
+        endExclusive(mode)
+        return r == 0 ? 1 : (r < 0 ? r : -5)
+    }
+
+    //% block="last enrollment result"
+    //% subcategory="5. Developer" weight=41
+    export function enrollmentResult(): number { return lastEnrollmentResult }
+
+    //% block="on scanner communication error"
+    //% subcategory="5. Developer" weight=40
+    export function onCommunicationError(handler: () => void): void { errorHandler = handler }
+
+    //% block="diagnose fingerprint memory"
+    //% subcategory="5. Developer" weight=39
+    export function diagnoseMemory(): number {
+        // 1 = index received, -2 = timeout, -3 = invalid packet,
+        // -5 = scanner error / unexpected payload, -10 = busy.
+        let mode = beginExclusive()
+        if (mode < 0) return mode
+        let bitmap = readIndexInternal()
+        let r = bitmap.length == 32 ? 1 : (lastRxError < 0 ? lastRxError : -5)
+        endExclusive(mode)
+        return r
+    }
+
+    //% block="last response bytes received"
+    //% subcategory="5. Developer" weight=38
+    export function diagnosticReceivedBytes(): number { return lastRxBytes }
+
+    //% block="last response expected bytes"
+    //% subcategory="5. Developer" weight=37
+    export function diagnosticExpectedBytes(): number { return lastRxExpected }
+
 }

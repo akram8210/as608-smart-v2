@@ -1,42 +1,47 @@
-# AS608 Smart v2.0.0-beta.6 — Diagnostic GetImage bypass
+# AS608 Smart — micro:bit MakeCode extension
 
-**Diagnostic pre-release; not hardware verified.** No changes to UART packet construction, wiring, baud rate, or v1.1.
+AS608 Smart is a MakeCode extension for the AS608 UART fingerprint sensor and BBC micro:bit. The block category shown to users is **AS608 Smart**.
 
-This release permits `identify finger once` to send **GetImage (0x01)** even if the initial ReadSysPara (0x0F) probe failed and `ready=false`. Only the GetImage command bypasses the ready guard; enrollment, auto-scanning, other commands remain guarded. If GetImage succeeds, subsequent Img2Tz/Search still require `ready=true`, so this is strictly a transport diagnostic, **not a full identification fix**.
+## Install
 
-Test: `on start` → connect RX P13 TX P14 → pause 1000ms → `identify finger once` → show `UART transmitted bytes` → show `UART received bytes` → show `last sensor status` (with pauses between displays). Place finger on scanner during test.
+1. Create a public GitHub repository (suggested name: `as608-smart-v2`).
+2. Upload **the files in this folder to the repository root** (`main.ts`, `pxt.json`, `icon.png`, `LICENSE`, `README.md`). Do not upload the ZIP as a single file.
+3. In the Microsoft MakeCode editor for micro:bit, open **Extensions** and paste the GitHub repository URL, e.g. `https://github.com/akram8210/as608-smart-v2` (replace with the actual published URL).
+4. Select the extension when MakeCode finds it. Publishing on GitHub does not guarantee inclusion in the extension search catalog.
 
-Expected: GetImage command TX length **12**; RX > 0 indicates some response. If RX=0 and status=-2, GetImage also timed out. If RX>0, report the values, even if identification returns -2.
+The repository URL above is an example, **not a claim that the repository is already published**. The micro:bit iPad app may have different extension import capabilities; check the actual app before planning a lesson.
 
-> **Beta 5 test:** Removes two pre-command `serial.readBuffer(0)` drains to align the UART send sequence with the working v1.1 driver. This is a hypothesis, not a confirmed hardware fix. Keep v1.1 unchanged.
+## Wiring — verify your AS608 module pinout
 
-# AS608 Smart Fingerprint v2.0.0-beta.5
+| AS608 lead | micro:bit |
+| --- | --- |
+| Red (power) | 3V (only if module is rated for this supply) |
+| Black (ground) | GND |
+| White (sensor TX) | P13 (micro:bit RX) |
+| Yellow (sensor RX) | P14 (micro:bit TX) |
 
-Independent MakeCode extension for micro:bit V2 and AS608-compatible UART fingerprint readers.
+Use the actual module datasheet to confirm wire colors, operating voltage and logic levels. Do not power a module that requires more current than the micro:bit can safely provide.
 
-## Beta 4 changes
-- `connect fingerprint scanner` now sends AS608 **Read System Parameters (0x0F)** after UART initialization and waits for a validated acknowledgment, following the successful v1.1 connection sequence conceptually (implementation is independent).
-- `fingerprint sensor connected?` reports the outcome of that initialization, without overwriting the UART diagnostic counters.
-- If connection fails, the sensor is marked disconnected; `last sensor status` and UART diagnostics retain the failed initial probe.
-- On success, the reported sensor library capacity is used for searches.
-- All Beta 3 blocks and diagnostics are retained.
+## Main classroom blocks
 
-## One hardware test (Blocks)
-In `on start`:
-1. `connect fingerprint scanner RX P13 TX P14`
-2. `pause 1000 ms`
-3. `show number UART transmitted bytes`
-4. `pause 1000 ms`
-5. `show number UART received bytes`
-6. `pause 1000 ms`
-7. `show number last sensor status`
+- **1. Setup**: connect scanner / start automatic recognition.
+- **2. Recognition**: recognized and rejected events.
+- **3. Enrollment**: register a new fingerprint (for authorized demonstrations only).
+- **4. Management**: fingerprint count, deletion by ID, automatic deletion, and **delete all fingerprints**.
+- **5. Developer**: diagnostics and low-level operations.
 
-Expected outgoing packet size for the 0x0F command: **12** bytes. Success requires a valid response and `last sensor status = 0`. A result of `12, 0, -2` means the initial probe still timed out without receiving bytes. This build has **not been tested on physical hardware**.
+### Clear the sensor after an authorized demonstration
 
-## GitHub release
-Create tag `v2.0.0-beta.5` targeting the commit that contains these files. Mark it **pre-release**. Tagging makes versions reproducible but does not guarantee MakeCode cache refresh.
+Run **delete all fingerprints** under Management. The extension sends AS608 `Empty (0x0D)`, checks the acknowledgment, reads the remaining template count, and displays a check and `0` only when the reported count is zero. It displays an error otherwise. Keep the sensor powered until the operation finishes. This clears the sensor's template database; it does not constitute a forensic secure-erasure guarantee.
 
-## Notes
-- Do not replace the known-working v1.1 project.
-- `icon.png` is included but visibility in MakeCode's extension gallery is not guaranteed for unapproved extensions.
-- MIT licensed.
+## Privacy and classroom safety
+
+Fingerprint templates used to identify a person are biometric personal data. **Do not enroll pupils' fingerprints without approval from the school's data controller and data protection officer and a lawful basis under GDPR.** Prefer simulation or an approved teacher demonstration. Erasing fingerprints after class is good data minimization but does not by itself make collection lawful. This project is an educational prototype, not a certified security or access-control product.
+
+## Testing and status
+
+The user reported that the **delete-all operation erased the fingerprints on the physical sensor**. Independent build verification of this release against the MakeCode toolchain has **not** been performed here. Before broad release, import the repository into MakeCode, compile and test every essential block and the zero-count/previous-fingerprint rejection checks.
+
+## License
+
+MIT. See `LICENSE`.
